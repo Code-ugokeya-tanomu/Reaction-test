@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>反応時間測定ツール</title>
+
+<style>
+body {
+  font-family: sans-serif;
+  text-align: center;
+  margin-top: 40px;
+}
+
+#target-container {
+  position: relative;
+  width: 200px;
+  margin: 40px auto;
+}
+
+#message{
+  margin-bottom: 10px;
+  font-weight: bold;
+}
+
+#target {
+  width: 200px;
+  height: 200px;
+  background: gray;
+  cursor: pointer;
+}
+
+/* ===== 吹き出し ===== */
+.balloon {
+  position: absolute;
+  top: 230px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff3cd;
+  border: 1px solid #f0c36d;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.9em;
+  white-space: nowrap;     /* ← 改行防止 */
+  min-width: 160px;
+  text-align: center;
+}
+
+/* 矢印（上向き） */
+.balloon::before {
+  content: "";
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 0 8px 10px 8px;
+  border-style: solid;
+  border-color: transparent transparent #f0c36d transparent;
+}
+
+.results-container {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 40px;
+}
+
+.stimulus-block {
+  width: 45%;
+  border: 1px solid #ccc;
+  padding: 15px;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+.error {
+  color: red;
+  font-weight: bold;
+}
+</style>
+</head>
+
+<body>
+
+<h1>反応時間測定</h1>
+
+<label>
+刺激：
+<select id="stimulus">
+  <option value="visual">視覚</option>
+  <option value="auditory">聴覚</option>
+</select>
+</label>
+
+<label style="margin-left:20px;">
+保存セット：
+<select id="setSelect">
+  <option value="0">セット1</option>
+  <option value="1">セット2</option>
+</select>
+</label>
+
+<div id="target-container">
+  <p id="message">クリック / タップで開始</p>
+  <div id="target"></div>
+  <div class="balloon">ここをクリック / タップ</div>
+</div>
+
+<div class="results-container">
+
+<div class="stimulus-block">
+<h2>視覚刺激</h2>
+<h3>セット1</h3>
+<ul id="visualResults0"></ul>
+<p id="visualAverage0">平均：---</p>
+<h3>セット2</h3>
+<ul id="visualResults1"></ul>
+<p id="visualAverage1">平均：---</p>
+</div>
+
+<div class="stimulus-block">
+<h2>聴覚刺激</h2>
+<h3>セット1</h3>
+<ul id="auditoryResults0"></ul>
+<p id="auditoryAverage0">平均：---</p>
+<h3>セット2</h3>
+<ul id="auditoryResults1"></ul>
+<p id="auditoryAverage1">平均：---</p>
+</div>
+
+</div>
+
+<button id="reset">リセット</button>
+
+<script>
+/* ===== 状態 ===== */
+let state = "idle";
+let startTime = 0;
+let timerId = null;
+
+/* ===== データ ===== */
+let visualTimes = [[], []];
+let auditoryTimes = [[], []];
+
+/* ===== Audio ===== */
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.0001;
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.01);
+}
+
+function playBeep() {
+  const osc = audioCtx.createOscillator();
+  osc.frequency.value = 1000;
+  osc.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.1);
+}
+
+/* ===== DOM ===== */
+const target = document.getElementById("target");
+const message = document.getElementById("message");
+const stimulus = document.getElementById("stimulus");
+const setSelect = document.getElementById("setSelect");
+const resetBtn = document.getElementById("reset");
+
+const vRes = [
+  document.getElementById("visualResults0"),
+  document.getElementById("visualResults1")
+];
+const vAvg = [
+  document.getElementById("visualAverage0"),
+  document.getElementById("visualAverage1")
+];
+const aRes = [
+  document.getElementById("auditoryResults0"),
+  document.getElementById("auditoryResults1")
+];
+const aAvg = [
+  document.getElementById("auditoryAverage0"),
+  document.getElementById("auditoryAverage1")
+];
+
+/* ===== 初期化 ===== */
+function resetToIdle(text="クリック / タップで開始") {
+  if (timerId) clearTimeout(timerId);
+  timerId = null;
+  state = "idle";
+  target.style.background = "gray";
+  message.textContent = text;
+}
+
+/* ===== 入力処理 ===== */
+function handleInput(e) {
+  e.preventDefault();
+  initAudio();
+
+  if (state === "waiting") {
+    resetToIdle();
+    message.innerHTML = "<span class='error'>フライング！やり直してください</span>";
+    setTimeout(() => resetToIdle(), 1000);
+    return;
+  }
+
+  if (state === "idle") {
+    state = "waiting";
+    message.textContent = "待ってください…";
+
+    timerId = setTimeout(() => {
+      state = "measuring";
+      startTime = performance.now();
+
+      if (stimulus.value === "visual") {
+        target.style.background = "red";
+      } else {
+        playBeep();
+      }
+      message.textContent = "今すぐクリック！";
+    }, Math.random() * 2000 + 1000);
+    return;
+  }
+
+  if (state === "measuring") {
+    const rt = performance.now() - startTime;
+    const set = Number(setSelect.value);
+
+    if (stimulus.value === "visual") {
+      visualTimes[set].unshift(rt);
+      if (visualTimes[set].length > 5) visualTimes[set].pop();
+      update(visualTimes[set], vRes[set], vAvg[set]);
+    } else {
+      auditoryTimes[set].unshift(rt);
+      if (auditoryTimes[set].length > 5) auditoryTimes[set].pop();
+      update(auditoryTimes[set], aRes[set], aAvg[set]);
+    }
+
+    resetToIdle("クリック / タップで再測定");
+  }
+}
+
+/* ===== 表示更新 ===== */
+function update(times, list, avg) {
+  list.innerHTML = "";
+  times.forEach((t,i)=>{
+    const li = document.createElement("li");
+    li.textContent = `${i+1}回目：${t.toFixed(1)} ms`;
+    list.appendChild(li);
+  });
+  avg.textContent = times.length
+    ? `平均：${(times.reduce((a,b)=>a+b,0)/times.length).toFixed(1)} ms`
+    : "平均：---";
+}
+
+/* ===== リセット ===== */
+resetBtn.addEventListener("click", ()=>{
+  visualTimes = [[], []];
+  auditoryTimes = [[], []];
+  for (let i=0;i<2;i++) {
+    update([], vRes[i], vAvg[i]);
+    update([], aRes[i], aAvg[i]);
+  }
+  resetToIdle();
+});
+
+/* ===== イベント ===== */
+target.addEventListener("click", handleInput);
+target.addEventListener("touchstart", handleInput, { passive:false });
+</script>
+
+</body>
+</html>
